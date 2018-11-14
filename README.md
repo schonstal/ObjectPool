@@ -6,60 +6,100 @@ Instead of creating and destroying new objects all the time, this script reduces
 Usage
 =====
 
-## Create the Prefab and Pool
-This script stores objects based on what prefab they were instantiated with, so first you have to create a prefab and reference it from the scene object that is going to create it. Here I have a `Turret` that is going to instantiate a `Bullet` prefab.
-```
-using UnityEngine;
-using System.Collections;
+Normally, when you instantiate and destroy instances of prefabs, you are constantly creating new objects and destroying them at runtime, which can cause runtime garbage collection and occasional framerate drops. ObjectPool can prevent this by pre-instantiating objects for you, which are then re-used instead of being destroyed!
 
-public class Turret : MonoBehaviour
-{
-	public Bullet bulletPrefab;
-}
-```
+## Spawning Pooled Objects
+For example, if I have a Turret that shoots Bullet objects, I can just create 10 bullets and re-use those same 10 objects. The bullets will never be destroyed, just de-activated and re-activated when you respawn them.
 
-Once that is ready, all you have to do is create the object pool for the Bullet.
+To do this with ObjectPool, you just have to call CreatePool() on the prefab that you want to be pooled.
 ```
-using UnityEngine;
-using System.Collections;
-
 public class Turret : MonoBehaviour
 {
 	public Bullet bulletPrefab;
 
 	void Start()
 	{
-		ObjectPool.CreatePool(bulletPrefab);
+		//Create a pool with 10 pre-instantiated bullets in it
+		bulletPrefab.CreatePool(10);
+
+		//Or you could also pre-instantiate none, and the system will instantiate them as it needs them
+		bulletPrefab.CreatePool();
 	}
 }
 ```
-You only need to do this once per prefab, so usually this makes sense to do in `Start()` or `Awake()`. subsequent calls will be safely ignored.
+Now all you have to do is replace all your calls to `Instantiate()` and `Destroy()` with calls to ObjectPool’s `Spawn()` and `Recycle()`. So for example, when the `Turret` shoots, I spawn a `Bullet` instance.
+```
+public class Turret : MonoBehaviour
+{
+	public Bullet bulletPrefab;
 
+	public void ShootBullet()
+	{
+		//Spawn a bullet at my position with my rotation
+		bulletPrefab.Spawn(transform.position, transform.rotation);
+	}
+}
+```
+When you want to recycle the instance, you can just call `Recycle()` on the component or game object you want to de-spawn. Here we will `Recycle()` our `Bullet` instance when it collides with something.
+```
+public class Bullet : MonoBehaviour
+{
+	void OnCollisionEnter(Collider other)
+	{
+		//De-activate the object and return it to the spawn pool
+		gameObject.Recycle();
 
-## Spawn/Recycle
-To use pooled objects, you simply have to replace your normal `Instantiate()` and `Destroy()` calls with calls to `ObjectPool.Spawn()` and `ObjectPool.Recycle()` instead!
+		//You can also use this:
+		//this.Recycle();
+	}
+}
+```
+The `Spawn()` function returns a reference to the created instance, so if you want to store it or call any additional methods on it, you can do so. Unlike Unity’s `Instantiate()`, you do not have to cast the return value to a `GameObject` or `Component`.
 
-To instantiate an object, call `ObjectPool.Spawn()` and pass in the prefab (and optionally position/rotation). This function returns a reference to the created instance.
-```
-//Spawn an object from the pool
-bulletInstance = ObjectPool.Spawn(bulletPrefab);
-bulletInstance = ObjectPool.Spawn(bulletPrefab, position);
-bulletInstance = ObjectPool.Spawn(bulletPrefab, position, rotation);
-```
-When you want to “destroy” the object, just call `ObjectPool.Recycle()` and pass in the reference that was returned by `Spawn()`.
-```
-//Disable the object and return it to the pool
-ObjectPool.Recycle(bulletInstance);
-```
-### Shorthand Syntax
-The script comes with a few extension methods to make using the object pools even more natural and expressive!
-```
-//Just call Spawn() on the prefab directly!
-bulletInstance = bulletPrefab.Spawn(position, rotation);
+## Be Careful With Recycled Objects!
+Now that your objects are being recycled and re-used, you have to be careful, because if your instances have any variables that change, you’ll have to manually reset them every time a new instance gets spawned. You can do this by using Unity’s `OnEnable()` and `OnDisable()` functions, which will be called whenever your instance is spawned or recycled.
 
-//And to recycle the instance...
-bulletInstance.Recycle();
+For example, this is incorrect:
 ```
-That looks super clean, and requires no casting on your part like the usual Unity instantiation calls.
+public class Bullet : MonoBehaviour
+{
+	public float travelDuration;
+	float timer = 0; //Only gets set to zero once!
 
-> The best way to use ObjectPool is to just completely replace `Instantiate`/`Destroy` with `Spawn`/`Recycle`. If `CreatePool()` was not called, `Spawn`/`Recycle` will just instantiate and destroy objects as usual, making it really easy to toggle pooling on/off per prefab.
+	void Update()
+	{
+		timer += Time.deltaTime;
+
+		if (timer >= travelDuration)
+		{
+			gameObject.Recycle();
+		}
+	}
+}
+```
+Why? Because our timer variable counts up, but never returns to zero! So the second time this `Bullet` spawns, it will immediately recycle itself. We can easily fix this:
+```
+public class Bullet : MonoBehaviour
+{
+	public float travelDuration;
+	float timer;
+
+	void OnEnable()
+	{
+		//Correct! Now timer resets every single time:
+		timer = 0;
+	}
+
+	void Update()
+	{
+		timer += Time.deltaTime;
+
+		if (timer >= travelDuration)
+		{
+			gameObject.Recycle();
+		}
+	}
+}
+```
+That’s better, now our `Bullet` will correctly reset his timer variable every time it respawns. It’s a little bit annoying having to do this yourself, but the gained speed from using pooled objects is worth it!
+
